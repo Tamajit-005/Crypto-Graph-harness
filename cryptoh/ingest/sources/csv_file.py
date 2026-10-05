@@ -22,7 +22,7 @@ def edges_from_path(path: str) -> list[Edge]:
                 Edge(
                     src=row["src"],
                     dst=row["dst"],
-                    weight=float(row.get("weight", 1.0) or 1.0),
+                    weight=float(row.get("weight", 1.0)),
                     raw=str(row),
                 )
             )

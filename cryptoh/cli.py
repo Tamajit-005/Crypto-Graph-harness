@@ -10,36 +10,44 @@ from rich.console import Console
 
 from cryptoh.banner import show_banner
 from cryptoh.config import settings
+from cryptoh.core.analysis import analyze_windows
 from cryptoh.core.events import AnomalyEvent
-from cryptoh.extract.dot_render import to_dot
 from cryptoh.extract.png_render import save_subgraph_png
-from cryptoh.extract.subgraph import extract
-from cryptoh.ingest.graph_builder import build_matrix
 from cryptoh.ingest.sources.base import Edge
 from cryptoh.ingest.sources.csv_file import edges_from_path as csv_edges
+from cryptoh.ingest.sources.docker_bridge import edges_from_path as docker_edges
+from cryptoh.ingest.sources.ebpf_socket import edges_from_path as ebpf_edges
 from cryptoh.ingest.sources.json_stream import edges_from_path as json_edges
 from cryptoh.ingest.sources.nginx_access_log import edges_from_path as nginx_edges
+from cryptoh.ingest.sources.pcap_file import edges_from_path as pcap_edges
+from cryptoh.ingest.sources.syslog_udp import edges_from_path as syslog_edges
+from cryptoh.ingest.sources.vpc_flow_log import edges_from_path as vpc_edges
 from cryptoh.llm.fallback import diagnose as fallback_diagnose
 from cryptoh.llm.gemma import diagnose_live
+from cryptoh.llm.ollama_local import diagnose_local
 from cryptoh.llm.parser import parse_json_response
 from cryptoh.llm.prompts.diagnose import DIAGNOSE_PROMPT
 from cryptoh.llm.scrub import scrub_pii
 from cryptoh.mitigate import render as render_template
 from cryptoh.mitigate import validate_iptables
-from cryptoh.spectral.baseline import Baseline
-from cryptoh.spectral.clustering import detect as cluster_detect
-from cryptoh.spectral.fiedler import detect as fiedler_detect
-from cryptoh.spectral.laplacian import normalized_laplacian, smallest_eigenpairs
-from cryptoh.spectral.multiplicity import detect as mult_detect
-from cryptoh.spectral.multiplicity import multiplicity
-from cryptoh.spectral.rule import combine
 from cryptoh.tui.audit import write_audit
 from cryptoh.tui.confirm import confirm_apply
 from cryptoh.tui.operator import show_diagnosis
 
 app = typer.Typer(help="Crypto-Graph Harness — spectral telemetry diagnostics.")
 
-SOURCES = {"nginx": nginx_edges, "csv": csv_edges, "json": json_edges}
+SOURCE_HELP = "source:path (nginx, csv, json, docker, ebpf, vpc, pcap, syslog) or bare path"
+
+SOURCES = {
+    "nginx": nginx_edges,
+    "csv": csv_edges,
+    "json": json_edges,
+    "docker": docker_edges,
+    "ebpf": ebpf_edges,
+    "vpc": vpc_edges,
+    "pcap": pcap_edges,
+    "syslog": syslog_edges,
+}
 DETECTORS = ["fiedler", "multiplicity", "clustering"]
 MITIGATIONS = ["iptables", "docker", "k8s", "nginx"]
 
@@ -101,58 +109,15 @@ def _parse_window(window: str) -> int:
 
 
 def _analyze(
-    edges: list[Edge], window_lines: int = 200, baseline_windows: int = 12
+    edges: list[Edge], window_lines: int = 200, baseline_windows: int = 12,
+    delta: float = 0.20,
 ) -> list[dict]:
-    baseline = Baseline(warmup_windows=baseline_windows)
-    results: list[dict] = []
-    for index in range(0, len(edges), window_lines):
-        chunk = edges[index : index + window_lines]
-        window_no = index // window_lines
-        matrix, node_ids = build_matrix(chunk)
-        count = len(node_ids)
-        if count < 3:
-            results.append(
-                {"window": window_no, "n": count, "m": len(chunk), "lambda2": 0.0,
-                 "mult": 1, "status": "normal", "reason": "tiny graph"}
-            )
-            continue
-        lap = normalized_laplacian(matrix)
-        vals, vecs = smallest_eigenpairs(lap, k=min(8, count - 1))
-        lambda2 = float(vals[1]) if len(vals) > 1 else 0.0
-        mult = multiplicity(vals)
-        embedding = vecs[:, 1:]
-        if not baseline.ready:
-            baseline.update(lambda2, mult)
-            results.append(
-                {"window": window_no, "n": count, "m": len(chunk), "lambda2": lambda2,
-                 "mult": mult, "status": "baseline"}
-            )
-            continue
-        fiedler = fiedler_detect(baseline.lambda2, lambda2)
-        mult_sig = mult_detect(baseline.mult, mult)
-        cluster = cluster_detect(embedding, node_ids)
-        decision = combine([fiedler["fired"], mult_sig["fired"], cluster["fired"]])
-        baseline.update(lambda2, mult)
-        record: dict = {
-            "window": window_no, "n": count, "m": len(chunk), "lambda2": lambda2,
-            "mult": mult, "baseline_lambda2": baseline.lambda2,
-            "baseline_mult": baseline.mult, "fiedler": fiedler, "mult_sig": mult_sig,
-            "cluster": cluster, "votes": decision["votes"],
-            "status": "ANOMALY" if decision["anomaly"] else "normal",
-        }
-        if decision["anomaly"]:
-            fiedler_vec = vecs[:, 1] if vecs.shape[1] > 1 else vecs[:, 0] * 0.0
-            outliers = list(cluster.get("nodes", []))
-            sub = extract(matrix, node_ids, fiedler_vec, outlier_nodes=outliers, k=8)
-            record["subgraph"] = sub
-            record["outliers"] = outliers
-            record["dot"] = to_dot(sub, anomalous_nodes=outliers or sub["nodes"])
-            record["logs"] = [e.raw for e in chunk if e.raw][:30]
-        results.append(record)
-    return results
+    """Thin wrapper over the shared pipeline (kept for backward compatibility)."""
+    return analyze_windows(edges, window_lines, baseline_windows, delta)
 
 
-def _diagnose(dot: str, logs: list[str], strength: float, nodes: list[str]) -> dict:
+def _diagnose(dot: str, logs: list[str], strength: float, nodes: list[str],
+              png_bytes: bytes | None = None) -> dict:
     logs = scrub_pii(logs)
     # dot kept unscrubbed: node IDs are graph structure, not PII.
     if settings.gemini_api_key:
@@ -160,7 +125,7 @@ def _diagnose(dot: str, logs: list[str], strength: float, nodes: list[str]) -> d
             dot=dot, logs="\n".join(logs), spectral_strength=f"{strength:.2f}"
         )
         try:
-            return parse_json_response(diagnose_live(settings.gemini_api_key, prompt))
+            return parse_json_response(diagnose_live(settings.gemini_api_key, prompt, png_bytes))
         except RuntimeError:
             pass
     return fallback_diagnose(dot=dot, logs=logs, spectral_strength=strength, nodes=nodes)
@@ -205,13 +170,18 @@ def _run(
         png_path = str(outdir / f"anomaly_w{r['window']}.png")
         save_subgraph_png(r["subgraph"], png_path)
         typer.echo(f"  subgraph PNG: {png_path}")
+        try:
+            with open(png_path, "rb") as fh:
+                png_bytes: bytes | None = fh.read()
+        except OSError:
+            png_bytes = None
         nodes = list(r["subgraph"]["nodes"])
         if no_mitigate:
             diagnosis: dict = {"diagnosis": "mitigation skipped (--no-mitigate)"}
             mitigation: dict = {"type": "none", "script": "", "explanation": "skipped"}
         else:
             strength = r["votes"] / 3.0
-            diagnosis = _diagnose(r["dot"], r["logs"], strength, nodes)
+            diagnosis = _diagnose(r["dot"], r["logs"], strength, nodes, png_bytes)
             mitigation = diagnosis.get("mitigation", {}) if isinstance(diagnosis, dict) else {}
             script = mitigation.get("script", "") if isinstance(mitigation, dict) else ""
             if script and not _validate_script(script):
@@ -254,7 +224,7 @@ def _run(
 
 @app.command()
 def batch(
-    source: str = typer.Option(..., help="nginx:path, csv:path, json:path, or bare path"),
+    source: str = typer.Option(..., help=SOURCE_HELP),
     model: str = typer.Option("gemma-4"),
     window: str = typer.Option("5s"),
     baseline: float = typer.Option(60.0),
@@ -268,7 +238,7 @@ def batch(
 
 @app.command()
 def watch(
-    source: str = typer.Option(..., help="nginx:path, csv:path, json:path, or bare path"),
+    source: str = typer.Option(..., help=SOURCE_HELP),
     model: str = typer.Option("gemma-4"),
     window: str = typer.Option("5s"),
     baseline: float = typer.Option(60.0),
@@ -279,3 +249,40 @@ def watch(
     typer.echo("watch mode (single pass over current file contents)")
     _run(_load_edges(source), source, model, _parse_window(window),
          baseline, output_dir, no_mitigate, "watch")
+
+
+@app.command()
+def serve(
+    port: int = typer.Option(8000, help="port to listen on"),
+    host: str = typer.Option("0.0.0.0", help="interface to bind"),
+) -> None:
+    """Launch the monitoring dashboard and JSON API."""
+    try:
+        import uvicorn
+    except ImportError:
+        typer.echo("server dependencies are not installed", err=True)
+        raise typer.Exit(code=1)
+    show_banner()
+    typer.echo(f"serving dashboard at http://{host}:{port}")
+    uvicorn.run("cryptoh.web.server:app", host=host, port=port)
+
+
+@app.command()
+def calibrate(
+    source: str = typer.Option(..., help=SOURCE_HELP),
+    window: str = typer.Option("5s"),
+    baseline: float = typer.Option(60.0),
+) -> None:
+    """Sweep detection thresholds over a dataset and report anomaly counts."""
+    edges = _load_edges(source)
+    window_secs = _parse_window(window)
+    warmup = max(1, int(baseline / window_secs))
+    typer.echo(f"calibrating on {len(edges)} edges from {source}")
+    for delta in (0.10, 0.15, 0.20, 0.30):
+        results = _analyze(edges, baseline_windows=warmup, delta=delta)
+        anomalies = sum(1 for r in results if r["status"] == "ANOMALY")
+        lambdas = [r["lambda2"] for r in results if r["status"] != "tiny graph"]
+        spread = f"{min(lambdas):.3f}..{max(lambdas):.3f}" if lambdas else "n/a"
+        typer.echo(f"  delta={delta:.2f}: {anomalies}/{len(results)} anomalous windows "
+                   f"(lambda2 range {spread})")
+    typer.echo("recommended: smallest delta with zero anomalies on benign traffic")

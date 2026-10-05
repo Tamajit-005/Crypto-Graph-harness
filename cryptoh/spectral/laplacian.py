@@ -17,6 +17,15 @@ def normalized_laplacian(A: sparse.spmatrix) -> sparse.csr_matrix:
 def smallest_eigenpairs(L: sparse.spmatrix, k: int = 8) -> tuple[np.ndarray, np.ndarray]:
     n = L.shape[0]
     k = max(1, min(k, n - 1))
-    vals, vecs = eigsh(sparse.csr_matrix(L, dtype=float), k=k, which="SM")
+    M = sparse.csr_matrix(L, dtype=float)
+    try:
+        vals, vecs = eigsh(M, k=k, which="SM")
+    except Exception:
+        # Small, degenerate, or non-convergent cases: dense symmetric solver.
+        dense = M.toarray()
+        dense = (dense + dense.T) * 0.5
+        vals_all, vecs_all = np.linalg.eigh(dense)
+        vals, vecs = vals_all[:k], vecs_all[:, :k]
     order = np.argsort(vals)
-    return vals[order], vecs[:, order]
+    vals = np.clip(vals[order], 0.0, 2.0)
+    return vals, vecs[:, order]

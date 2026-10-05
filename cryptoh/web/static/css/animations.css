@@ -1,0 +1,38 @@
+.typewriter {
+  overflow: hidden;
+  white-space: pre;
+  border-right: 2px solid var(--cyan);
+  animation: typing 2.4s steps(60, end), blink .75s step-end infinite;
+  width: 0;
+}
+@keyframes typing {
+  from { width: 0; }
+  to   { width: 100%; }
+}
+@keyframes blink {
+  50% { border-color: transparent; }
+}
+
+.anomaly-pulse {
+  animation: anomaly-border 1.5s ease-in-out;
+}
+@keyframes anomaly-border {
+  0%, 100% { border-color: var(--border); box-shadow: none; }
+  50% { border-color: var(--magenta); box-shadow: 0 0 18px rgba(255,0,255,.35); }
+}
+
+.fade-in {
+  animation: fadeIn .35s ease-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.slide-in {
+  animation: slideIn .45s cubic-bezier(.22,1,.36,1);
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(40px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
