@@ -123,7 +123,7 @@ plt.savefig("/tmp/subgraph_anomaly.png")
 # 5. Multimodal Agent Tool Call: Send image + minimal context to Gemma 4
 client = genai.Client()
 response = client.models.generate_content(
-    model="gemma-4-31b-it", # Or standard Gemma 4 via Gemini API[cite: 1]
+    model="gemma-3-27b-it", # Gemma multimodal model via the Gemini API
     contents=[
         genai.types.Part.from_bytes(
             data=open("/tmp/subgraph_anomaly.png", "rb").read(),
@@ -149,3 +149,25 @@ print(response.text)
 
 
 3. **No Hallucinations:** You don't ask the AI to "find the needle in a haystack." The linear algebra finds the needle deterministically in 10ms. The AI is used purely for high-level reasoning and command synthesis.
+
+---
+
+### Where This Sits: Prior Art and the Novel Combination
+
+Every component below has prior art. The combination does not.
+
+| Approach | What it contributes | What it lacks |
+|---|---|---|
+| Dynamic spectral anomaly detection (AAAI'25; Laplacian change-point detection, KDD) | The math: graph Laplacian spectrum, Fiedler value, eigenvalue change-points | Research code only — no operator CLI, no model explanation, no mitigation |
+| LLM log analysis (LogPrompt, 2024) | Zero-shot reasoning over logs with prompts | Text only — never builds a graph, drowns at 100k lines/min, no mitigation |
+| Runtime provenance (Tracee, Falco) | Live detection from kernel/telemetry streams | Scores or rules only — stops at detection, no diagnosis, no fix |
+| Topology-reading assistants (GeNet, ICDCS'25) | Proof that vision models can read network diagrams | Design-time config helper — not runtime security, no anomaly detection, no mitigation |
+
+**The novel contribution** is the closed loop in a single open-source package:
+live runtime traffic → spectral localization → **a rendered anomaly-subgraph
+image routed into a vision-language model as the primary diagnostic signal**
+→ validated, operator-approved mitigation. To the best of our knowledge
+(Oct 2026), no open-source security tool feeds a rendered attack-topology
+image to a vision model for diagnosis. Spectral methods shrink 100,000 log
+lines to an ~8-node picture the model can actually see; the model turns that
+picture into a root cause and a patch. Each side covers the other's blind spot.
