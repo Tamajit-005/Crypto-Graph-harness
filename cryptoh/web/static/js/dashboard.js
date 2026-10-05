@@ -72,6 +72,12 @@
     try { window.renderTopology(dot); } catch {}
   }
 
+  function render3D(dot, anomalousNodes) {
+    if (typeof window.renderGraph3D === 'function') {
+      try { window.renderGraph3D(dot, anomalousNodes || []); } catch {}
+    }
+  }
+
   async function loadDetect() {
     try {
       const r = await fetch(API_BASE + '/api/v1/detect');
@@ -108,6 +114,7 @@
         setStatus('ANOMALY', 'anomaly anomaly-pulse');
         setTimeout(() => setStatus('normal', 'normal'), 1600);
         renderTopologyFromEvent(msg);
+        render3D(msg.dot, msg.nodes);
         if (msg.mitigation_id) {
           fetch(API_BASE + '/api/v1/mitigate/' + encodeURIComponent(msg.mitigation_id))
             .then(r => r.json()).then(renderMitigation).catch(() => {});
