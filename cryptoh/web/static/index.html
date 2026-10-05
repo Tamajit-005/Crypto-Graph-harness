@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>cryptoh — spectral telemetry diagnostics</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
+<link rel="stylesheet" href="/static/css/theme.css" />
+<link rel="stylesheet" href="/static/css/animations.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="banner" id="banner" aria-hidden="true"></div>
+    <p class="subtitle">Spectral Telemetry Diagnostics — live anomaly feed</p>
+  </header>
+
+  <main class="grid">
+    <section class="panel">
+      <h2>Spectral Signals</h2>
+      <div class="radar-wrap">
+        <svg class="radar" viewBox="0 0 200 200" aria-label="spectral radar sweep">
+          <circle cx="100" cy="100" r="90" class="grid-line" />
+          <circle cx="100" cy="100" r="60" class="grid-line" />
+          <circle cx="100" cy="100" r="30" class="grid-line" />
+          <line x1="100" y1="10" x2="100" y2="190" class="grid-line" />
+          <line x1="10" y1="100" x2="190" y2="100" class="grid-line" />
+          <path id="sweep" d="M100,100 L100,10 A90,90 0 0,1 190,100 Z" class="sweep" />
+          <g id="signal-points"></g>
+        </svg>
+        <div class="signal-legend">
+          <div class="sig"><span class="dot cyan"></span>λ₂ <span id="v-l2">—</span></div>
+          <div class="sig"><span class="dot magenta"></span>mult <span id="v-mult">—</span></div>
+          <div class="sig"><span class="dot green"></span>votes <span id="v-votes">—</span></div>
+        </div>
+      </div>
+      <div class="status-bar">
+        <span id="status-text" class="status normal">idle</span>
+        <span id="window-count" class="muted">windows: 0</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Live Anomaly Feed</h2>
+      <div id="feed" class="feed">
+        <div class="empty">No anomalies yet. POST edges to <code>/api/v1/diagnose</code></div>
+      </div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Topology</h2>
+      <div id="topology" class="topology"></div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Mitigation</h2>
+      <div id="mitigation" class="mitigation">
+        <div class="empty">Mitigation scripts appear here after an anomaly is diagnosed.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/canvas-confetti/1.9.3/confetti.browser.min.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/topology.js"></script>
+</body>
+</html>

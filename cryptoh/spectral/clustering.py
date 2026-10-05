@@ -8,7 +8,8 @@ def outlier_nodes(embedding: np.ndarray, node_ids: list[str], sigma: float = 3.0
     X = np.asarray(embedding, dtype=float)
     centroid = X.mean(axis=0)
     dists = np.linalg.norm(X - centroid, axis=1)
-    mu, sd = float(dists.mean()), float(dists.std() + 1e-9)
+    mu, sd = float(dists.mean()), float(dists.std())
+    sd = max(sd, 1e-3)  # floor: never flag pure floating-point jitter
     return [nid for nid, d in zip(node_ids, dists) if d > mu + sigma * sd]
 
 def detect(embedding: np.ndarray, node_ids: list[str]) -> dict:

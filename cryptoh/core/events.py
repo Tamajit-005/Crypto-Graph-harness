@@ -19,5 +19,6 @@ class AnomalyEvent(BaseModel):
     mitigation: dict = Field(default_factory=dict)
     dot: str = ""
     png_path: str = ""
+    feedback: str = ""
     is_anomaly: bool = True
     model_config = {"arbitrary_types_allowed": True}
