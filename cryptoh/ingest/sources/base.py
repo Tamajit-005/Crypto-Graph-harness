@@ -10,6 +10,7 @@ class Edge:
     dst: str
     weight: float = 1.0
     raw: str = ""
+    timestamp: str = ""
 
 
 class Source(Protocol):

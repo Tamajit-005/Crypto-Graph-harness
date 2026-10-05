@@ -61,6 +61,7 @@ async def _event_generator():
                 yield _sse_format("anomaly", {
                     "window": snap.get("windows", 0),
                     "nodes": item.get("nodes", []),
+                    "dot": item.get("dot", ""),
                     "signals": {"lambda2": snap.get("signals", {}).get("lambda2", 0.0),
                                 "multiplicity": snap.get("signals", {}).get("multiplicity", 1),
                                 "votes": snap.get("votes", 0)},

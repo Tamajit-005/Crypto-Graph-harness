@@ -27,8 +27,9 @@ def analyze_windows(
     window_lines: int = 200,
     baseline_windows: int = 12,
     delta: float = 0.20,
+    adaptive: bool = False,
 ) -> list[dict]:
-    baseline = Baseline(warmup_windows=baseline_windows)
+    baseline = Baseline(warmup_windows=baseline_windows, adaptive=adaptive)
     results: list[dict] = []
     for index in range(0, len(edges), window_lines):
         chunk = edges[index:index + window_lines]

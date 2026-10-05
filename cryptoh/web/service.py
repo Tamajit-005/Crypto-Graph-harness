@@ -78,7 +78,8 @@ def diagnose_edges(items: list[dict]) -> dict:
                                   "script": script,
                                   "explanation": mitigation.get("explanation", ""),
                                   "validated": validated,
-                                  "nodes": nodes}
+                                  "nodes": nodes,
+                                  "dot": r.get("dot", "")}
         out_anomalies.append({
             "id": aid,
             "window": r["window"],

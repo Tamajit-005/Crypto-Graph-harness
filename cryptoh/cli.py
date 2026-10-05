@@ -1,5 +1,4 @@
-"""cryptoh CLI — watch / batch / list over spectral anomaly detection."""
-
+"""cryptoh CLI — watch / batch / list / serve / calibrate / export over spectral anomaly detection."""
 from __future__ import annotations
 
 import sys
@@ -24,12 +23,12 @@ from cryptoh.ingest.sources.syslog_udp import edges_from_path as syslog_edges
 from cryptoh.ingest.sources.vpc_flow_log import edges_from_path as vpc_edges
 from cryptoh.llm.fallback import diagnose as fallback_diagnose
 from cryptoh.llm.gemma import diagnose_live
-from cryptoh.llm.ollama_local import diagnose_local
 from cryptoh.llm.parser import parse_json_response
 from cryptoh.llm.prompts.diagnose import DIAGNOSE_PROMPT
 from cryptoh.llm.scrub import scrub_pii
 from cryptoh.mitigate import render as render_template
 from cryptoh.mitigate import validate_iptables
+from cryptoh.stix import write_stix
 from cryptoh.tui.audit import write_audit
 from cryptoh.tui.confirm import confirm_apply
 from cryptoh.tui.operator import show_diagnosis
@@ -87,17 +86,36 @@ def list_cmd(kind: str = typer.Argument(..., help="sources|detectors|mitigations
         raise typer.BadParameter(f"unknown list kind: {kind!r} (sources|detectors|mitigations)")
 
 
-def _load_edges(source: str) -> list[Edge]:
-    name, path = "nginx", source
-    if ":" in source:
-        maybe, rest = source.split(":", 1)
-        if maybe in SOURCES:
-            name, path = maybe, rest
-        elif "/" not in maybe and "\\" not in maybe and not Path(source).exists():
-            raise typer.BadParameter(f"unknown source: {maybe!r}")
-    if not Path(path).exists():
-        raise typer.BadParameter(f"source file not found: {path!r}")
-    return SOURCES[name](path)
+def _load_edges(
+    sources: list[str],
+    fmt: str | None = None,
+    from_ts: str | None = None,
+    to_ts: str | None = None,
+) -> list[Edge]:
+    edges: list[Edge] = []
+    for src in sources:
+        name, path = fmt or "nginx", src
+        if ":" in src and not fmt:
+            maybe, rest = src.split(":", 1)
+            if maybe in SOURCES:
+                name, path = maybe, rest
+            elif "/" not in maybe and "\\" not in maybe and not Path(src).exists():
+                raise typer.BadParameter(f"unknown source: {maybe!r}")
+        if not Path(path).exists():
+            raise typer.BadParameter(f"source file not found: {path!r}")
+        out = list(SOURCES[name](path))
+        if from_ts or to_ts:
+            filtered: list[Edge] = []
+            for e in out:
+                ts = getattr(e, "timestamp", "")
+                if from_ts and ts < from_ts:
+                    continue
+                if to_ts and ts > to_ts:
+                    continue
+                filtered.append(e)
+            out = filtered
+        edges.extend(out)
+    return edges
 
 
 def _parse_window(window: str) -> int:
@@ -108,24 +126,15 @@ def _parse_window(window: str) -> int:
         raise typer.BadParameter(f"cannot parse --window {window!r} (try '5s')")
 
 
-def _analyze(
-    edges: list[Edge], window_lines: int = 200, baseline_windows: int = 12,
-    delta: float = 0.20,
-) -> list[dict]:
-    """Thin wrapper over the shared pipeline (kept for backward compatibility)."""
-    return analyze_windows(edges, window_lines, baseline_windows, delta)
-
-
 def _diagnose(dot: str, logs: list[str], strength: float, nodes: list[str],
-              png_bytes: bytes | None = None) -> dict:
+              png_bytes: bytes | None = None, model: str | None = None) -> dict:
     logs = scrub_pii(logs)
-    # dot kept unscrubbed: node IDs are graph structure, not PII.
     if settings.gemini_api_key:
         prompt = DIAGNOSE_PROMPT.format(
             dot=dot, logs="\n".join(logs), spectral_strength=f"{strength:.2f}"
         )
         try:
-            return parse_json_response(diagnose_live(settings.gemini_api_key, prompt, png_bytes))
+            return parse_json_response(diagnose_live(settings.gemini_api_key, prompt, png_bytes, model=model))
         except RuntimeError:
             pass
     return fallback_diagnose(dot=dot, logs=logs, spectral_strength=strength, nodes=nodes)
@@ -147,6 +156,11 @@ def _run(
     output_dir: str,
     no_mitigate: bool,
     mode: str,
+    adaptive: bool = False,
+    dry_run: bool = False,
+    compare: str | None = None,
+    feedback: str | None = None,
+    speed: float = 1.0,
 ) -> None:
     show_banner()
     console = Console()
@@ -154,10 +168,12 @@ def _run(
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
     warmup = max(1, int(baseline_secs / window_secs))
-    results = _analyze(edges, baseline_windows=warmup)
+    results = analyze_windows(edges, baseline_windows=warmup, adaptive=adaptive)
     anomalies = [r for r in results if r["status"] == "ANOMALY"]
     for r in results:
         stamp = f"{r['window'] * window_secs // 60:02d}:{r['window'] * window_secs % 60:02d}"
+        if speed != 1.0:
+            stamp = f"{r['window'] * window_secs / speed / 60:02.0f}:{r['window'] * window_secs / speed % 60:02.0f}"
         typer.echo(
             f"[t={stamp}] graph: {r['n']} nodes, {r['m']} edges, "
             f"\u03bb_2={r['lambda2']:.3f} [{r['status']}]"
@@ -182,6 +198,11 @@ def _run(
         else:
             strength = r["votes"] / 3.0
             diagnosis = _diagnose(r["dot"], r["logs"], strength, nodes, png_bytes)
+            if compare:
+                typer.echo(f"  --compare: running second diagnosis with model={compare}")
+                cmp = _diagnose(r["dot"], r["logs"], strength, nodes, png_bytes, model=compare)
+                typer.echo(f"  primary: {diagnosis.get('diagnosis', '')}")
+                typer.echo(f"  compare: {cmp.get('diagnosis', '')}")
             mitigation = diagnosis.get("mitigation", {}) if isinstance(diagnosis, dict) else {}
             script = mitigation.get("script", "") if isinstance(mitigation, dict) else ""
             if script and not _validate_script(script):
@@ -199,13 +220,17 @@ def _run(
             mitigation=mitigation if isinstance(mitigation, dict) else {},
             dot=r["dot"],
             png_path=png_path,
+            feedback=feedback or "",
         )
-        if not no_mitigate:
+        if not no_mitigate and not dry_run:
             show_diagnosis(console, event)
             if sys.stdin.isatty() and not confirm_apply("apply mitigation?"):
                 typer.echo("  mitigation NOT applied (operator declined)")
-        audit_path = write_audit("cryptoh-audit", event)
-        typer.echo(f"  audit: {audit_path}")
+        if not dry_run:
+            audit_path = write_audit("cryptoh-audit", event)
+            typer.echo(f"  audit: {audit_path}")
+        if feedback:
+            typer.echo(f"  feedback recorded: {feedback}")
     report = [f"# cryptoh {mode} report", f"source: {source}", f"windows: {len(results)}",
               f"anomalies: {len(anomalies)}", ""]
     for r in results:
@@ -224,31 +249,51 @@ def _run(
 
 @app.command()
 def batch(
-    source: str = typer.Option(..., help=SOURCE_HELP),
+    sources: list[str] = typer.Option(..., "--source", help=SOURCE_HELP),
     model: str = typer.Option("gemma-4"),
     window: str = typer.Option("5s"),
     baseline: float = typer.Option(60.0),
     output_dir: str = typer.Option("cryptoh-report"),
     no_mitigate: bool = typer.Option(False, "--no-mitigate"),
+    adaptive_baseline: bool = typer.Option(False, "--adaptive-baseline"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    compare: str | None = typer.Option(None, "--compare"),
+    feedback: str | None = typer.Option(None, "--feedback"),
+    speed: float = typer.Option(1.0, "--speed"),
+    fmt: str | None = typer.Option(None, "--format"),
+    from_ts: str | None = typer.Option(None, "--from"),
+    to_ts: str | None = typer.Option(None, "--to"),
 ) -> None:
-    """Single pass over a telemetry file in 200-line windows."""
-    _run(_load_edges(source), source, model, _parse_window(window),
-         baseline, output_dir, no_mitigate, "batch")
+    """Single pass over one or more telemetry files."""
+    edges = _load_edges(sources, fmt=fmt, from_ts=from_ts, to_ts=to_ts)
+    source_label = sources[0] if len(sources) == 1 else f"{len(sources)} sources"
+    _run(edges, source_label, model, _parse_window(window),
+         baseline, output_dir, no_mitigate, "batch",
+         adaptive=adaptive_baseline, dry_run=dry_run, compare=compare,
+         feedback=feedback, speed=speed)
 
 
 @app.command()
 def watch(
-    source: str = typer.Option(..., help=SOURCE_HELP),
+    sources: list[str] = typer.Option(..., "--source", help=SOURCE_HELP),
     model: str = typer.Option("gemma-4"),
     window: str = typer.Option("5s"),
     baseline: float = typer.Option(60.0),
     output_dir: str = typer.Option("cryptoh-report"),
     no_mitigate: bool = typer.Option(False, "--no-mitigate"),
+    adaptive_baseline: bool = typer.Option(False, "--adaptive-baseline"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    compare: str | None = typer.Option(None, "--compare"),
+    feedback: str | None = typer.Option(None, "--feedback"),
 ) -> None:
-    """Tail a telemetry file (MVP: single streaming pass over current content)."""
+    """Tail telemetry files (single pass over current contents)."""
     typer.echo("watch mode (single pass over current file contents)")
-    _run(_load_edges(source), source, model, _parse_window(window),
-         baseline, output_dir, no_mitigate, "watch")
+    edges = _load_edges(sources)
+    source_label = sources[0] if len(sources) == 1 else f"{len(sources)} sources"
+    _run(edges, source_label, model, _parse_window(window),
+         baseline, output_dir, no_mitigate, "watch",
+         adaptive=adaptive_baseline, dry_run=dry_run, compare=compare,
+         feedback=feedback)
 
 
 @app.command()
@@ -269,20 +314,55 @@ def serve(
 
 @app.command()
 def calibrate(
-    source: str = typer.Option(..., help=SOURCE_HELP),
+    sources: list[str] = typer.Option(..., "--source", help=SOURCE_HELP),
     window: str = typer.Option("5s"),
     baseline: float = typer.Option(60.0),
 ) -> None:
     """Sweep detection thresholds over a dataset and report anomaly counts."""
-    edges = _load_edges(source)
+    edges = _load_edges(sources)
     window_secs = _parse_window(window)
     warmup = max(1, int(baseline / window_secs))
-    typer.echo(f"calibrating on {len(edges)} edges from {source}")
+    typer.echo(f"calibrating on {len(edges)} edges from {sources[0]}")
     for delta in (0.10, 0.15, 0.20, 0.30):
-        results = _analyze(edges, baseline_windows=warmup, delta=delta)
+        results = analyze_windows(edges, baseline_windows=warmup, delta=delta)
         anomalies = sum(1 for r in results if r["status"] == "ANOMALY")
         lambdas = [r["lambda2"] for r in results if r["status"] != "tiny graph"]
         spread = f"{min(lambdas):.3f}..{max(lambdas):.3f}" if lambdas else "n/a"
         typer.echo(f"  delta={delta:.2f}: {anomalies}/{len(results)} anomalous windows "
                    f"(lambda2 range {spread})")
     typer.echo("recommended: smallest delta with zero anomalies on benign traffic")
+
+
+export_app = typer.Typer(help="Export anomaly data.")
+app.add_typer(export_app, name="export", help="Export commands.")
+
+
+@export_app.command("stix")
+def export_stix(
+    sources: list[str] = typer.Option(..., "--source", help=SOURCE_HELP),
+    output: str = typer.Option("cryptoh-report/stix-bundle.json"),
+    baseline: float = typer.Option(60.0),
+    window: str = typer.Option("5s"),
+) -> None:
+    """Run detection and export the latest anomaly as a STIX 2.1 bundle."""
+    edges = _load_edges(sources)
+    window_secs = _parse_window(window)
+    warmup = max(1, int(baseline / window_secs))
+    results = analyze_windows(edges, baseline_windows=warmup)
+    anomalies = [r for r in results if r["status"] == "ANOMALY"]
+    if not anomalies:
+        typer.echo("no anomalies to export")
+        raise typer.Exit()
+    latest = anomalies[-1]
+    nodes = list(latest["subgraph"]["nodes"])
+    event = AnomalyEvent(
+        nodes=nodes,
+        signals={"lambda2": latest["lambda2"], "multiplicity": latest["mult"],
+                 "votes": latest["votes"]},
+        diagnosis={},
+        mitigation={},
+        dot=latest.get("dot", ""),
+        png_path="",
+    )
+    path = write_stix(output, event)
+    typer.echo(f"stix bundle: {path}")

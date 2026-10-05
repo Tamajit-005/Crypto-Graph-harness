@@ -8,7 +8,7 @@ from cryptoh.ingest.sources.base import Edge
 
 name = "nginx"
 
-PATTERN = re.compile(r'^(?P<ip>\S+)\s+\S+\s+\S+\s+\[[^\]]+\]\s+"(?P<method>[A-Z]+)\s+(?P<path>\S+)')
+PATTERN = re.compile(r'^(?P<ip>\S+)\s+\S+\s+\S+\s+\[(?P<ts>[^\]]+)\]\s+"(?P<method>[A-Z]+)\s+(?P<path>\S+)')
 
 
 def parse_line(line: str) -> Edge | None:
@@ -17,7 +17,7 @@ def parse_line(line: str) -> Edge | None:
         return None
     path = m.group("path")
     dst = path.strip("/").split("/")[0] or "/"
-    return Edge(src=m.group("ip"), dst=dst, weight=1.0, raw=line)
+    return Edge(src=m.group("ip"), dst=dst, weight=1.0, raw=line, timestamp=m.group("ts"))
 
 
 def edges_from_path(path: str) -> list[Edge]:
