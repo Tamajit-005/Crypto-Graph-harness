@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: cryptoh
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: CRYPTOH_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false

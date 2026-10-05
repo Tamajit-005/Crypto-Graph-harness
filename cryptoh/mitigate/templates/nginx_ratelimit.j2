@@ -1,0 +1,6 @@
+limit_req_zone $binary_remote_addr zone=cryptoh:10m rate=5r/s;
+server {
+    location {{ location }} {
+        limit_req zone=cryptoh burst=10 nodelay;
+    }
+}

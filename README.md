@@ -140,12 +140,12 @@ print(response.text)
 
 ---
 
-### Why Judges Will Award This First Place
+### Why This Approach Wins
 
-1. **True Multimodality:** You aren't just sending text to Gemma 4; you are using Gemma 4's multimodal vision to inspect a generated graph topology alongside code logs, satisfying the core Gemma 4 challenge.
+1. **True Multimodality:** You aren't just sending text to the model; you are using multimodal vision to inspect a generated graph topology alongside service logs.
 
 
-2. **Standard-Compliant Agent Harness:** Wrap this script into an open-source CLI harness with an Apache 2.0 license on GitHub, satisfying the second prize category.
+2. **Standard-Compliant Agent Harness:** Wrap this script into an open-source CLI harness with an Apache 2.0 license on GitHub.
 
 
 3. **No Hallucinations:** You don't ask the AI to "find the needle in a haystack." The linear algebra finds the needle deterministically in 10ms. The AI is used purely for high-level reasoning and command synthesis.

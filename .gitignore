@@ -1,2 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+cryptoh-report/
+cryptoh-audit/
+*.png
+.env
 Roadmap/
-README.md
+.agent/
