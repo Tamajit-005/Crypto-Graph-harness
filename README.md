@@ -130,44 +130,196 @@ response = client.models.generate_content(
             mime_type="image/png"
         ),
         f"Spectral graph analysis isolated these anomalous interacting nodes: {bad_nodes}. "
-        "Diagnose the failure pattern and generate a bash command to patch the issue."
-    ]
-)
+        # Crypto-Graph Harness
 
-print(response.text)
+        Crypto-Graph Harness is a Python 3.11+ CLI and FastAPI service for finding
+        structural anomalies in runtime telemetry. It converts communication records
+        into weighted graphs, analyzes normalized Laplacian signals, extracts a small
+        anomaly subgraph, and produces operator-facing diagnosis and mitigation output.
 
-```
+        The repository includes synthetic NGINX access-log fixtures and a complete demo
+        that exercises batch detection, optional Gemma diagnosis, mitigation validation,
+        and the live dashboard.
 
----
+        ## How It Works
 
-### Why This Approach Wins
+        The shared pipeline is:
 
-1. **True Multimodality:** You aren't just sending text to the model; you are using multimodal vision to inspect a generated graph topology alongside service logs.
+        ```text
+        telemetry source -> weighted interaction graph -> tumbling windows
+                -> normalized Laplacian -> three detectors -> 2-of-3 decision
+                -> anomaly subgraph -> DOT/PNG -> diagnosis -> validated mitigation
+        ```
 
+        The detectors are:
 
-2. **Standard-Compliant Agent Harness:** Wrap this script into an open-source CLI harness with an Apache 2.0 license on GitHub.
+        - Fiedler signal: detects a change in algebraic connectivity (`lambda_2`).
+        - Multiplicity signal: detects an unusual number of near-zero eigenvalues.
+        - Clustering signal: finds outliers in the spectral embedding.
 
+        An anomaly requires at least two of the three signals. Anomalies produce a
+        focused subgraph, Graphviz DOT, a PNG topology image, scrubbed log context, an
+        operator diagnosis, and an audit record. The model step is optional: without a
+        `GEMINI_API_KEY`, the built-in deterministic heuristic still produces a usable
+        diagnosis and fallback `iptables` mitigation.
 
-3. **No Hallucinations:** You don't ask the AI to "find the needle in a haystack." The linear algebra finds the needle deterministically in 10ms. The AI is used purely for high-level reasoning and command synthesis.
+        ## Requirements
 
----
+        - Python 3.11 or newer
+        - [`uv`](https://docs.astral.sh/uv/)
+        - Graphviz is recommended for local graph tooling; PNG rendering uses the
+            Python plotting dependencies installed by `uv`.
+        - A Gemini API key is optional. The offline fallback is used when it is absent
+            or when a model request fails.
 
-### Where This Sits: Prior Art and the Novel Combination
+        ## Installation
 
-Every component below has prior art. The combination does not.
+        ```bash
+        uv sync
+        uv run cryptoh --version
+        ```
 
-| Approach | What it contributes | What it lacks |
-|---|---|---|
-| Dynamic spectral anomaly detection (AAAI'25; Laplacian change-point detection, KDD) | The math: graph Laplacian spectrum, Fiedler value, eigenvalue change-points | Research code only — no operator CLI, no model explanation, no mitigation |
-| LLM log analysis (LogPrompt, 2024) | Zero-shot reasoning over logs with prompts | Text only — never builds a graph, drowns at 100k lines/min, no mitigation |
-| Runtime provenance (Tracee, Falco) | Live detection from kernel/telemetry streams | Scores or rules only — stops at detection, no diagnosis, no fix |
-| Topology-reading assistants (GeNet, ICDCS'25) | Proof that vision models can read network diagrams | Design-time config helper — not runtime security, no anomaly detection, no mitigation |
+        For local configuration, copy `.env.example` to `.env` and set a key when
+        model-backed diagnosis is wanted:
 
-**The novel contribution** is the closed loop in a single open-source package:
-live runtime traffic → spectral localization → **a rendered anomaly-subgraph
-image routed into a vision-language model as the primary diagnostic signal**
-→ validated, operator-approved mitigation. To the best of our knowledge
-(Oct 2026), no open-source security tool feeds a rendered attack-topology
-image to a vision model for diagnosis. Spectral methods shrink 100,000 log
-lines to an ~8-node picture the model can actually see; the model turns that
-picture into a root cause and a patch. Each side covers the other's blind spot.
+        ```bash
+        cp .env.example .env
+        export GEMINI_API_KEY="your-key"
+        ```
+
+        `.env` is local configuration and must not be committed.
+
+        ## Quick Start
+
+        Run batch analysis against the included benign fixture:
+
+        ```bash
+        uv run cryptoh batch --source data/nginx_normal.log --no-mitigate
+        ```
+
+        Run the attack fixture and write report artifacts to a temporary directory:
+
+        ```bash
+        uv run cryptoh batch \
+            --source data/nginx_c2_attack.log \
+            --output-dir /tmp/cryptoh-demo
+        ```
+
+        The output directory can contain `report.md` and anomaly PNGs. Anomaly
+        diagnosis also writes NDJSON records under `cryptoh-audit/` unless `--dry-run`
+        is used.
+
+        ## Full Demo
+
+        The checked-in `scripts/demo.sh` runs four stages:
+
+        1. Verifies benign traffic remains quiet.
+        2. Detects the synthetic C2 attack using the 2-of-3 rule.
+        3. Runs Gemma diagnosis when configured, otherwise uses the offline fallback.
+        4. Starts the live dashboard, tails a real file, and injects attack traffic.
+
+        ```bash
+        ./scripts/demo.sh
+        ```
+
+        Useful options:
+
+        ```bash
+        ./scripts/demo.sh --no-ui             # terminal pipeline only
+        ./scripts/demo.sh --no-model          # skip model calls
+        ./scripts/demo.sh --port 8011         # use another dashboard port
+        ./scripts/demo.sh --hold 0            # stop after the dashboard check
+        ```
+
+        With the UI enabled, open `http://127.0.0.1:8000/`. The script prints the
+        temporary log and report locations and cleans up the server on exit.
+
+        ## CLI Commands
+
+        ```bash
+        uv run cryptoh list sources
+        uv run cryptoh list detectors
+        uv run cryptoh list mitigations
+        uv run cryptoh batch --source data/nginx_c2_attack.log
+        uv run cryptoh watch --source data/nginx_c2_attack.log --from-end
+        uv run cryptoh calibrate --source data/nginx_normal.log
+        uv run cryptoh export stix --source data/nginx_c2_attack.log
+        uv run cryptoh serve --host 127.0.0.1 --port 8000
+        ```
+
+        `batch` and `watch` accept `--window`, `--baseline`, `--output-dir`,
+        `--adaptive-baseline`, `--dry-run`, `--compare`, and `--feedback`. Source
+        paths can be prefixed explicitly, for example
+        `--source nginx:data/nginx_normal.log`.
+
+        Supported source adapters are:
+
+        | Adapter | Typical input |
+        | --- | --- |
+        | `nginx` | NGINX access logs |
+        | `csv` | CSV edge records |
+        | `json` | JSON stream records |
+        | `docker` | Docker bridge flow records |
+        | `ebpf` | eBPF socket traces |
+        | `vpc` | VPC flow logs |
+        | `pcap` | Packet captures |
+        | `syslog` | Syslog/UDP records |
+
+        ## Dashboard API
+
+        Start the service with `uv run cryptoh serve` or run the Docker image. The
+        FastAPI application provides:
+
+        - `GET /api/v1/health` for version and live-ingestion status.
+        - `GET /api/v1/detect` for the current detection snapshot.
+        - `POST /api/v1/diagnose` to analyze posted `edges` or parse posted NGINX
+            `logs`; use `wait=true` for a synchronous response.
+        - `GET /api/v1/diagnose/{job_id}` to poll an asynchronous diagnosis job.
+        - `GET /api/v1/stream` for server-sent detection and mitigation events.
+        - `GET /` for the static operator dashboard.
+
+        The live tailer is enabled by setting `CRYPTOH_SOURCE` to a supported source
+        file before starting Uvicorn:
+
+        ```bash
+        CRYPTOH_SOURCE=/path/to/access.log \
+            uv run uvicorn cryptoh.web.server:app --host 127.0.0.1 --port 8000
+        ```
+
+        ## Mitigation and Safety
+
+        Supported mitigation backends are `iptables`, `docker`, `k8s`, and `nginx`.
+        Generated scripts are validated before they are presented. The CLI asks for
+        operator confirmation before applying a mitigation in an interactive terminal;
+        the demo automatically answers no. Use `--no-mitigate` or `--dry-run` when
+        testing detection only.
+
+        ## Docker
+
+        Build and run the dashboard:
+
+        ```bash
+        docker build -t cryptoh .
+        docker run --rm -p 8000:8000 cryptoh
+        ```
+
+        The image starts `uvicorn cryptoh.web.server:app` on port 8000.
+
+        ## Development
+
+        Run the test suite and lint checks with:
+
+        ```bash
+        uv run pytest
+        uv run ruff check .
+        ```
+
+        Useful implementation guides are in `docs/`, including the architecture,
+        spectral signals, adapter contract, model payload, mitigation safety, and
+        calibration notes. The source is organized into `cryptoh/ingest`,
+        `cryptoh/spectral`, `cryptoh/extract`, `cryptoh/llm`, `cryptoh/mitigate`,
+        `cryptoh/tui`, `cryptoh/web`, and `cryptoh/core`.
+
+        ## License
+
+        Apache-2.0. See [LICENSE](LICENSE).
