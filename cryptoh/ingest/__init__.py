@@ -16,6 +16,8 @@ from cryptoh.ingest.window import TumblingWindow
 parse_line = nginx_parse_line
 edges_from_path = nginx_edges_from_path
 
+from cryptoh.ingest.tailer import follow_lines
+
 __all__ = [
     "Edge",
     "TumblingWindow",
@@ -24,11 +26,13 @@ __all__ = [
     "docker_edges_from_path",
     "ebpf_edges_from_path",
     "edges_from_path",
+    "follow_lines",
     "json_edges_from_path",
     "nginx_edges_from_path",
+    "nginx_parse_line",
+    "parse_line",
     "pcap_edges_from_path",
     "syslog_edges_from_path",
     "vpc_edges_from_path",
-    "nginx_parse_line",
-    "parse_line",
 ]
+

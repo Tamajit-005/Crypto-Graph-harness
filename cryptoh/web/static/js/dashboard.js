@@ -22,6 +22,14 @@
     statusText.className = 'status ' + (kind || 'normal');
   }
 
+  function pushSignals(lambda2, mult, votes) {
+    const radar = window.__cryptohRadar;
+    if (!radar) return;
+    if (lambda2 != null) radar.l2 = lambda2;
+    if (mult != null) radar.mult = Math.min(1, (Number(mult) || 0) / 4);
+    if (votes != null) radar.votes = (Number(votes) || 0) / 3;
+  }
+
   function appendEvent(ev) {
     if (!feed.querySelector('.empty')) {
       const empty = feed.querySelector('.empty');
@@ -72,6 +80,7 @@
       vL2.textContent = data.signals.lambda2 != null ? data.signals.lambda2.toFixed(3) : '—';
       vMult.textContent = data.signals.multiplicity != null ? String(data.signals.multiplicity) : '—';
       vVotes.textContent = String(data.votes ?? '—');
+      pushSignals(data.signals && data.signals.lambda2, data.signals && data.signals.multiplicity, data.votes);
       windowCount.textContent = 'windows: ' + String(data.windows ?? 0);
       setStatus(data.anomaly ? 'ANOMALY' : 'normal', data.anomaly ? 'anomaly' : 'normal');
     } catch {}
@@ -86,6 +95,7 @@
         vL2.textContent = msg.lambda2 != null ? msg.lambda2.toFixed(3) : '—';
         vMult.textContent = String(msg.mult ?? '—');
         vVotes.textContent = String(msg.votes ?? '—');
+        pushSignals(msg.lambda2, msg.mult, msg.votes);
         windowCount.textContent = 'windows: ' + String(msg.window ?? '—');
         setStatus(msg.status === 'ANOMALY' ? 'ANOMALY' : 'normal', msg.status === 'ANOMALY' ? 'anomaly' : 'normal');
       } catch {}
@@ -131,25 +141,31 @@
   function initRadarPoints() {
     const g = document.getElementById('signal-points');
     if (!g) return;
-    function pts() {
-      const l2 = Math.random();
-      const mult = Math.random();
-      const votes = Math.random();
+    // Real signal values only: a random dot would misrepresent the detector.
+    const live = { l2: 0, mult: 0, votes: 0 };
+    function draw() {
       const cx = 100, cy = 100, r = 80;
       const a1 = -Math.PI / 2;
       const a2 = a1 + (2 / 3) * Math.PI;
       const a3 = a2 + (2 / 3) * Math.PI;
-      const x1 = cx + r * l2 * Math.cos(a1), y1 = cy + r * l2 * Math.sin(a1);
-      const x2 = cx + r * mult * Math.cos(a2), y2 = cy + r * mult * Math.sin(a2);
-      const x3 = cx + r * votes * Math.cos(a3), y3 = cy + r * votes * Math.sin(a3);
+      const clamp = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+      const l2 = clamp(live.l2), mult = clamp(live.mult), votes = clamp(live.votes);
+      const pt = (val, ang) => [
+        (cx + r * val * Math.cos(ang)).toFixed(2),
+        (cy + r * val * Math.sin(ang)).toFixed(2),
+      ];
+      const [x1, y1] = pt(l2, a1);
+      const [x2, y2] = pt(mult, a2);
+      const [x3, y3] = pt(votes, a3);
       g.innerHTML = `
-        <circle cx="${x1.toFixed(2)}" cy="${y1.toFixed(2)}" r="4" fill="#00ffff" opacity=".9" />
-        <circle cx="${x2.toFixed(2)}" cy="${y2.toFixed(2)}" r="4" fill="#ff00ff" opacity=".9" />
-        <circle cx="${x3.toFixed(2)}" cy="${y3.toFixed(2)}" r="4" fill="#00ff00" opacity=".9" />
+        <circle cx="${x1}" cy="${y1}" r="4" fill="#00ffff" opacity=".9" />
+        <circle cx="${x2}" cy="${y2}" r="4" fill="#ff00ff" opacity=".9" />
+        <circle cx="${x3}" cy="${y3}" r="4" fill="#00ff00" opacity=".9" />
       `;
     }
-    pts();
-    setInterval(pts, 5000);
+    window.__cryptohRadar = live;
+    draw();
+    setInterval(draw, 1000);
   }
 
   initBanner();

@@ -1,8 +1,12 @@
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    gemini_api_key: str = ""
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("GEMINI_API_KEY", "CRYPTOH_GEMINI_API_KEY"),
+    )
     model: str = "gemma-4"
     window_seconds: float = 5.0
     baseline_seconds: float = 60.0

@@ -123,7 +123,7 @@ plt.savefig("/tmp/subgraph_anomaly.png")
 # 5. Multimodal Agent Tool Call: Send image + minimal context to Gemma 4
 client = genai.Client()
 response = client.models.generate_content(
-    model="gemma-3-27b-it", # Gemma multimodal model via the Gemini API
+    model="gemma-4-26b-a4b-it", # Gemma 4 26B (AI Studio) multimodal model via the Gemini API
     contents=[
         genai.types.Part.from_bytes(
             data=open("/tmp/subgraph_anomaly.png", "rb").read(),

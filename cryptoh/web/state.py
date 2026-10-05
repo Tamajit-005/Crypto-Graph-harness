@@ -15,6 +15,7 @@ last_detection: dict = {
 
 mitigations: dict[str, dict] = {}
 _ids = itertools.count(1)
+png_dir = "cryptoh-report"
 
 
 def next_id() -> str:

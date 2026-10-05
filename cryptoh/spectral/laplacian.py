@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import sparse
 from scipy.sparse.csgraph import laplacian as csgraph_laplacian
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import ArpackError, ArpackNoConvergence, eigsh
 
 
 def symmetrize(A: sparse.spmatrix) -> sparse.csr_matrix:
@@ -14,14 +14,20 @@ def symmetrize(A: sparse.spmatrix) -> sparse.csr_matrix:
 def normalized_laplacian(A: sparse.spmatrix) -> sparse.csr_matrix:
     return csgraph_laplacian(symmetrize(A), normed=True).tocsr()
 
-def smallest_eigenpairs(L: sparse.spmatrix, k: int = 8) -> tuple[np.ndarray, np.ndarray]:
+def smallest_eigenpairs(
+    L: sparse.spmatrix, k: int = 8, seed: int = 7
+) -> tuple[np.ndarray, np.ndarray]:
     n = L.shape[0]
     k = max(1, min(k, n - 1))
     M = sparse.csr_matrix(L, dtype=float)
+    # Fixed starting vector: eigsh is otherwise random, and a security
+    # detector must not flip-flop between identical runs.
+    v0 = np.random.default_rng(seed).standard_normal(n)
     try:
-        vals, vecs = eigsh(M, k=k, which="SM")
-    except Exception:
+        vals, vecs = eigsh(M, k=k, which="SM", v0=v0, maxiter=n * 200)
+    except (ArpackError, ArpackNoConvergence, ValueError):
         # Small, degenerate, or non-convergent cases: dense symmetric solver.
+        # Anything else (a genuine bug) must surface, not be silently papered over.
         dense = M.toarray()
         dense = (dense + dense.T) * 0.5
         vals_all, vecs_all = np.linalg.eigh(dense)

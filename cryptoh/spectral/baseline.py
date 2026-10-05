@@ -39,5 +39,5 @@ class Baseline:
     @property
     def mult(self) -> int:
         if self.adaptive and self._ema_ready:
-            return int(round(self._ema_mult))
+            return round(self._ema_mult)
         return self.mult_history[0] if self.mult_history else 1

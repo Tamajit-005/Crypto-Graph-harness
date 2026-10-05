@@ -9,7 +9,7 @@ from rich.console import Console
 
 from cryptoh.banner import show_banner
 from cryptoh.config import settings
-from cryptoh.core.analysis import analyze_windows
+from cryptoh.core.analysis import analyze_window, analyze_windows
 from cryptoh.core.events import AnomalyEvent
 from cryptoh.extract.png_render import save_subgraph_png
 from cryptoh.ingest.sources.base import Edge
@@ -27,7 +27,8 @@ from cryptoh.llm.parser import parse_json_response
 from cryptoh.llm.prompts.diagnose import DIAGNOSE_PROMPT
 from cryptoh.llm.scrub import scrub_pii
 from cryptoh.mitigate import render as render_template
-from cryptoh.mitigate import validate_iptables
+from cryptoh.mitigate import validate_mitigation
+from cryptoh.spectral.baseline import Baseline
 from cryptoh.stix import write_stix
 from cryptoh.tui.audit import write_audit
 from cryptoh.tui.confirm import confirm_apply
@@ -140,11 +141,73 @@ def _diagnose(dot: str, logs: list[str], strength: float, nodes: list[str],
     return fallback_diagnose(dot=dot, logs=logs, spectral_strength=strength, nodes=nodes)
 
 
-def _validate_script(script: str) -> bool:
-    lines = [ln.strip() for ln in script.splitlines() if ln.strip()]
-    if not lines:
-        return False
-    return all(validate_iptables(ln).get("valid", False) for ln in lines)
+def _validate_script(script: str, kind: str = "iptables") -> bool:
+    """Validate a mitigation script with the validator matching its type."""
+    return bool(validate_mitigation(kind, script).get("valid"))
+
+
+def _emit_anomaly(
+    r: dict,
+    console: Console,
+    outdir: Path,
+    *,
+    no_mitigate: bool,
+    dry_run: bool,
+    compare: str | None,
+    feedback: str | None,
+) -> None:
+    """Print, render, diagnose and audit one anomaly window (shared by batch/watch)."""
+    typer.echo(f"  λ_2 shift: {r['fiedler']['detail']} (baseline {r['baseline_lambda2']:.3f})")
+    typer.echo(f"  multiplicity: {r['mult_sig']['detail']} | {r['cluster']['detail']}")
+    typer.echo(f"  votes: {r['votes']}/3 — extracting anomaly subgraph ...")
+    png_path = str(outdir / f"anomaly_w{r['window']}.png")
+    save_subgraph_png(r["subgraph"], png_path)
+    typer.echo(f"  subgraph PNG: {png_path}")
+    try:
+        with open(png_path, "rb") as fh:
+            png_bytes: bytes | None = fh.read()
+    except OSError:
+        png_bytes = None
+    nodes = list(r["subgraph"]["nodes"])
+    if no_mitigate:
+        diagnosis: dict = {"diagnosis": "mitigation skipped (--no-mitigate)"}
+        mitigation: dict = {"type": "none", "script": "", "explanation": "skipped"}
+    else:
+        strength = r["votes"] / 3.0
+        diagnosis = _diagnose(r["dot"], r["logs"], strength, nodes, png_bytes)
+        if compare:
+            typer.echo(f"  --compare: running second diagnosis with model={compare}")
+            cmp = _diagnose(r["dot"], r["logs"], strength, nodes, png_bytes, model=compare)
+            typer.echo(f"  primary: {diagnosis.get('diagnosis', '')}")
+            typer.echo(f"  compare: {cmp.get('diagnosis', '')}")
+        mitigation = diagnosis.get("mitigation", {}) if isinstance(diagnosis, dict) else {}
+        script = mitigation.get("script", "") if isinstance(mitigation, dict) else ""
+        if script and not _validate_script(script, mitigation.get("type", "iptables")):
+            typer.echo("  ⚠ UNVALIDATED mitigation script — review before applying")
+        if not script and nodes:
+            rendered = render_template(
+                "iptables_drop.j2", attacker_ip=nodes[0], service="any"
+            )
+            mitigation = {"type": "iptables", "script": rendered,
+                          "explanation": "Rendered fallback template."}
+    event = AnomalyEvent(
+        nodes=nodes,
+        signals={"lambda2": r["lambda2"], "multiplicity": r["mult"], "votes": r["votes"]},
+        diagnosis=diagnosis if isinstance(diagnosis, dict) else {"diagnosis": str(diagnosis)},
+        mitigation=mitigation if isinstance(mitigation, dict) else {},
+        dot=r["dot"],
+        png_path=png_path,
+        feedback=feedback or "",
+    )
+    if not no_mitigate and not dry_run:
+        show_diagnosis(console, event)
+        if sys.stdin.isatty() and not confirm_apply("apply mitigation?"):
+            typer.echo("  mitigation NOT applied (operator declined)")
+    if not dry_run:
+        audit_path = write_audit("cryptoh-audit", event)
+        typer.echo(f"  audit: {audit_path}")
+    if feedback:
+        typer.echo(f"  feedback recorded: {feedback}")
 
 
 def _run(
@@ -180,57 +243,8 @@ def _run(
         )
         if r["status"] != "ANOMALY":
             continue
-        typer.echo(f"  \u03bb_2 shift: {r['fiedler']['detail']} (baseline {r['baseline_lambda2']:.3f})")
-        typer.echo(f"  multiplicity: {r['mult_sig']['detail']} | {r['cluster']['detail']}")
-        typer.echo(f"  votes: {r['votes']}/3 — extracting anomaly subgraph ...")
-        png_path = str(outdir / f"anomaly_w{r['window']}.png")
-        save_subgraph_png(r["subgraph"], png_path)
-        typer.echo(f"  subgraph PNG: {png_path}")
-        try:
-            with open(png_path, "rb") as fh:
-                png_bytes: bytes | None = fh.read()
-        except OSError:
-            png_bytes = None
-        nodes = list(r["subgraph"]["nodes"])
-        if no_mitigate:
-            diagnosis: dict = {"diagnosis": "mitigation skipped (--no-mitigate)"}
-            mitigation: dict = {"type": "none", "script": "", "explanation": "skipped"}
-        else:
-            strength = r["votes"] / 3.0
-            diagnosis = _diagnose(r["dot"], r["logs"], strength, nodes, png_bytes)
-            if compare:
-                typer.echo(f"  --compare: running second diagnosis with model={compare}")
-                cmp = _diagnose(r["dot"], r["logs"], strength, nodes, png_bytes, model=compare)
-                typer.echo(f"  primary: {diagnosis.get('diagnosis', '')}")
-                typer.echo(f"  compare: {cmp.get('diagnosis', '')}")
-            mitigation = diagnosis.get("mitigation", {}) if isinstance(diagnosis, dict) else {}
-            script = mitigation.get("script", "") if isinstance(mitigation, dict) else ""
-            if script and not _validate_script(script):
-                typer.echo("  \u26a0 UNVALIDATED mitigation script — review before applying")
-            if not script and nodes:
-                rendered = render_template(
-                    "iptables_drop.j2", attacker_ip=nodes[0], service="any"
-                )
-                mitigation = {"type": "iptables", "script": rendered,
-                              "explanation": "Rendered fallback template."}
-        event = AnomalyEvent(
-            nodes=nodes,
-            signals={"lambda2": r["lambda2"], "multiplicity": r["mult"], "votes": r["votes"]},
-            diagnosis=diagnosis if isinstance(diagnosis, dict) else {"diagnosis": str(diagnosis)},
-            mitigation=mitigation if isinstance(mitigation, dict) else {},
-            dot=r["dot"],
-            png_path=png_path,
-            feedback=feedback or "",
-        )
-        if not no_mitigate and not dry_run:
-            show_diagnosis(console, event)
-            if sys.stdin.isatty() and not confirm_apply("apply mitigation?"):
-                typer.echo("  mitigation NOT applied (operator declined)")
-        if not dry_run:
-            audit_path = write_audit("cryptoh-audit", event)
-            typer.echo(f"  audit: {audit_path}")
-        if feedback:
-            typer.echo(f"  feedback recorded: {feedback}")
+        _emit_anomaly(r, console, outdir, no_mitigate=no_mitigate, dry_run=dry_run,
+                      compare=compare, feedback=feedback)
     report = [f"# cryptoh {mode} report", f"source: {source}", f"windows: {len(results)}",
               f"anomalies: {len(anomalies)}", ""]
     for r in results:
@@ -285,15 +299,54 @@ def watch(
     dry_run: bool = typer.Option(False, "--dry-run"),
     compare: str | None = typer.Option(None, "--compare"),
     feedback: str | None = typer.Option(None, "--feedback"),
+    window_size: int = typer.Option(200, "--window-size",
+                                    help="edges per analyzed window (tumbling)"),
+    poll: float = typer.Option(1.0, "--poll", help="seconds between tail polls"),
+    from_end: bool = typer.Option(False, "--from-end",
+                                  help="skip existing content, tail only new lines"),
+    max_windows: int = typer.Option(0, "--max-windows",
+                                    help="stop after N windows (0 = unlimited)"),
 ) -> None:
-    """Tail telemetry files (single pass over current contents)."""
-    typer.echo("watch mode (single pass over current file contents)")
-    edges = _load_edges(sources)
+    """Tail telemetry files and analyze each window as it fills."""
+    from cryptoh.ingest.sources.nginx_access_log import parse_line
+    from cryptoh.ingest.tailer import follow_lines
+
+    window_secs = _parse_window(window)
+    outdir = Path(output_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    console = Console()
+    show_banner()
     source_label = sources[0] if len(sources) == 1 else f"{len(sources)} sources"
-    _run(edges, source_label, model, _parse_window(window),
-         baseline, output_dir, no_mitigate, "watch",
-         adaptive=adaptive_baseline, dry_run=dry_run, compare=compare,
-         feedback=feedback)
+    typer.echo(
+        f"watch mode: following {source_label} "
+        f"({'from current end' if from_end else 'from beginning'}); "
+        f"window={window_size} edges, poll={poll}s; ctrl-c to stop"
+    )
+    warmup = max(1, int(baseline / window_secs))
+    window_state = Baseline(warmup_windows=warmup)
+    buffer: list[Edge] = []
+    count = 0
+    try:
+        for lines in follow_lines(sources, poll_seconds=poll, from_end=from_end):
+            buffer.extend(e for e in (parse_line(ln) for ln in lines) if e is not None)
+            while len(buffer) >= window_size:
+                chunk = buffer[:window_size]
+                buffer = buffer[window_size:]
+                record = analyze_window(chunk, window_state, count)
+                count += 1
+                stamp = f"{count * window_secs // 60:02d}:{count * window_secs % 60:02d}"
+                typer.echo(
+                    f"[t={stamp}] graph: {record['n']} nodes, {record['m']} edges, "
+                    f"λ_2={record['lambda2']:.3f} [{record['status']}]"
+                )
+                if record["status"] == "ANOMALY":
+                    _emit_anomaly(record, console, outdir, no_mitigate=no_mitigate,
+                                  dry_run=dry_run, compare=compare, feedback=feedback)
+                if max_windows and count >= max_windows:
+                    typer.echo(f"reached --max-windows {max_windows}; stopping")
+                    return
+    except KeyboardInterrupt:
+        typer.echo("\nstopped")
 
 
 @app.command()
